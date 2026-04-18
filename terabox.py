@@ -79,6 +79,8 @@ if len(USER_SESSION_STRING) == 0:
     logging.info("USER_SESSION_STRING variable is missing! Bot will split Files in 2Gb...")
     USER_SESSION_STRING = None
 
+COOKIES = os.environ.get('COOKIES', '')
+
 app = Client("jetbot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
 user = None
@@ -173,18 +175,45 @@ async def handle_message(client: Client, message: Message):
 
     encoded_url = urllib.parse.quote(url)
     try:
-        api_resp = requests.get(f"https://terabox-worker.robinkumarshakya103.workers.dev/api?url={encoded_url}", timeout=15)
-        api_data = api_resp.json()
-        if not api_data.get("success") or not api_data.get("files"):
-            await message.reply_text("Could not fetch download link.")
+        tb_headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': 'application/json, text/plain, */*',
+            'Accept-Language': 'en-US,en;q=0.9',
+            'Referer': 'https://www.1024terabox.com/',
+            'Cookie': COOKIES
+        }
+        tb_session = requests.Session()
+        tb_session.headers.update(tb_headers)
+        share_resp = tb_session.get(
+            'https://www.1024terabox.com/share/list',
+            params={
+                'app_id': '250528',
+                'shorturl': url,
+                'root': '1',
+                'order': 'name',
+                'desc': '1',
+                'web': '1',
+                'page': '1',
+                'num': '20',
+            },
+            timeout=20,
+            allow_redirects=True
+        )
+        share_data = share_resp.json()
+        logging.info(f"Terabox share API response errno: {share_data.get('errno')}")
+        if share_data.get('errno') != 0 or not share_data.get('list'):
+            await message.reply_text(f"Terabox error: {share_data.get('errmsg', 'Unknown error')}. Check cookies.")
             return
-        final_url = api_data["files"][0]["download_url"]
-    except Exception as api_err:
-        logging.error(f"API error: {api_err}")
-        await message.reply_text("API error. Please try again.")
+        file_info = share_data['list'][0]
+        final_url = file_info.get('dlink') or file_info.get('path')
+        if not final_url:
+            await message.reply_text("No download link found in Terabox response.")
+            return
+    except Exception as tb_err:
+        logging.error(f"Terabox direct API error: {tb_err}")
+        await message.reply_text("Download error. Please try again.")
         return
-
-    download = aria2.add_uris([final_url])
+    download = aria2.add_uris([final_url], options={"header": [f"Cookie: {COOKIES}", "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36", "Referer: https://www.1024terabox.com/"]})
     status_message = await message.reply_text("sᴇɴᴅɪɴɢ ʏᴏᴜ ᴛʜᴇ ᴍᴇᴅɪᴀ...🤤")
 
     start_time = datetime.now()
