@@ -108,55 +108,55 @@ def _find_between(s, start, end):
 
 def get_terabox_direct_link(url, cookies):
     """
-    Get direct download link from Terabox using jsToken extraction method.
-    Works from VPS by first fetching the HTML page to extract auth tokens.
+    Get direct download link from Terabox.
+    First tries without cookies (anonymous, avoids VPS datacenter block),
+    then falls back to with cookies if needed.
     """
-    headers = {
-        "Accept": "application/json, text/plain, */*",
+    # Browser-like headers WITHOUT cookies (anonymous request)
+    anon_headers = {
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
         "Accept-Encoding": "gzip, deflate, br",
-        "Accept-Language": "en-US,en;q=0.9,hi;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
         "Connection": "keep-alive",
         "DNT": "1",
-        "Sec-Fetch-Dest": "document",
-        "Sec-Fetch-Mode": "navigate",
-        "Sec-Fetch-Site": "none",
-        "Sec-Fetch-User": "?1",
         "Upgrade-Insecure-Requests": "1",
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36 Edg/135.0.0.0",
         "sec-ch-ua": '"Microsoft Edge";v="135", "Not-A.Brand";v="8", "Chromium";v="135"',
-        "Cookie": cookies,
         "sec-ch-ua-mobile": "?0",
         "sec-ch-ua-platform": '"Windows"',
     }
 
-    # Step 1: Follow redirect to get actual URL
+    # Headers WITH cookies (authenticated)
+    auth_headers = dict(anon_headers)
+    auth_headers["Cookie"] = cookies
+
+    # Step 1: Follow redirect to get actual URL (try anonymous first)
     logger.info(f"Step 1: Following redirect for {url}")
-    temp_req = requests.get(url, headers=headers, timeout=30)
+    temp_req = requests.get(url, headers=anon_headers, timeout=30, allow_redirects=True)
     if not temp_req.ok:
         logger.error(f"Step 1 failed: HTTP {temp_req.status_code}")
-        return None, None, None
+        return None, None, f"HTTP {temp_req.status_code}"
 
-    # Step 2: Get the HTML page to extract tokens
+    # Step 2: Get HTML page to extract tokens
     parsed_url = urlparse(temp_req.url)
     query_params = parse_qs(parsed_url.query)
 
     if "surl" not in query_params:
         logger.error(f"No surl in redirected URL: {temp_req.url}")
-        return None, None, None
+        return None, None, "Invalid share link"
 
     logger.info(f"Step 2: Fetching HTML page at {temp_req.url}")
-    req = requests.get(temp_req.url, headers=headers, timeout=30)
+    req = requests.get(temp_req.url, headers=anon_headers, timeout=30)
     respo = req.text
 
     # Step 3: Extract jsToken and logid from HTML
     js_token = _find_between(respo, 'fn%28%22', '%22%29')
     logid = _find_between(respo, 'dp-logid=', '&')
-
-    logger.info(f"Tokens extracted — jsToken: {'OK' if js_token else 'MISSING'}, logid: {'OK' if logid else 'MISSING'}")
+    logger.info(f"Tokens — jsToken: {'OK' if js_token else 'MISSING'}, logid: {'OK' if logid else 'MISSING'}")
 
     if not js_token or not logid:
-        logger.error("Failed to extract required tokens from HTML page")
-        return None, None, None
+        logger.error("Failed to extract jsToken/logid from HTML page")
+        return None, None, "Token extraction failed"
 
     surl = query_params["surl"][0]
     params = {
@@ -175,32 +175,52 @@ def get_terabox_direct_link(url, cookies):
         "root": "1",
     }
 
-    # Step 4: Call share/list API with tokens
-    logger.info(f"Step 4: Calling share/list API with jsToken")
-    req2 = requests.get(
-        "https://www.terabox.app/share/list",
-        headers=headers,
-        params=params,
-        timeout=30
-    )
-    response_data2 = req2.json()
-    logger.info(f"share/list errno: {response_data2.get('errno')}")
+    # Step 4a: Try share/list WITHOUT cookies (anonymous - avoids datacenter block)
+    logger.info("Step 4a: Calling share/list API without cookies (anonymous)")
+    try:
+        req2 = requests.get(
+            "https://www.terabox.app/share/list",
+            headers=anon_headers,
+            params=params,
+            timeout=30
+        )
+        response_data2 = req2.json()
+        logger.info(f"Anonymous share/list errno: {response_data2.get('errno')}")
 
-    if (
-        not response_data2 or
-        "list" not in response_data2 or
-        not response_data2["list"] or
-        response_data2.get("errno")
-    ):
-        error_message = response_data2.get("errmsg", "Failed to retrieve file list.")
-        logger.error(f"share/list error: {error_message}")
+        if response_data2.get("errno") == 0 and response_data2.get("list"):
+            file_info = response_data2["list"][0]
+            dlink = file_info.get("dlink", "")
+            file_name = file_info.get("server_filename", "file")
+            logger.info(f"Anonymous success! File: {file_name}")
+            return dlink, file_name, None
+    except Exception as e:
+        logger.error(f"Anonymous API call failed: {e}")
+
+    # Step 4b: Fallback — try WITH cookies
+    logger.info("Step 4b: Fallback — calling share/list API with cookies")
+    try:
+        req3 = requests.get(
+            "https://www.terabox.app/share/list",
+            headers=auth_headers,
+            params=params,
+            timeout=30
+        )
+        response_data3 = req3.json()
+        logger.info(f"Auth share/list errno: {response_data3.get('errno')}, errmsg: {response_data3.get('errmsg')}")
+
+        if response_data3.get("errno") == 0 and response_data3.get("list"):
+            file_info = response_data3["list"][0]
+            dlink = file_info.get("dlink", "")
+            file_name = file_info.get("server_filename", "file")
+            logger.info(f"Auth success! File: {file_name}")
+            return dlink, file_name, None
+
+        error_message = response_data3.get("errmsg", "Unknown error")
         return None, None, error_message
+    except Exception as e:
+        logger.error(f"Auth API call failed: {e}")
+        return None, None, str(e)
 
-    file_info = response_data2["list"][0]
-    dlink = file_info.get("dlink", "")
-    file_name = file_info.get("server_filename", "file")
-    logger.info(f"Got dlink for: {file_name}")
-    return dlink, file_name, None
 
 async def is_user_member(client, user_id):
     try:
