@@ -109,117 +109,120 @@ def _find_between(s, start, end):
 def get_terabox_direct_link(url, cookies):
     """
     Get direct download link from Terabox.
-    First tries without cookies (anonymous, avoids VPS datacenter block),
-    then falls back to with cookies if needed.
+    Terabox share/list API works without cookies from normal IPs.
+    From VPS (datacenter IP), Terabox returns a different/blocked response.
+    We try multiple approaches and log full responses for debugging.
     """
-    # Browser-like headers WITHOUT cookies (anonymous request)
-    anon_headers = {
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
-        "Accept-Encoding": "gzip, deflate, br",
+    base_headers = {
+        "Accept": "application/json, text/plain, */*",
         "Accept-Language": "en-US,en;q=0.9",
         "Connection": "keep-alive",
-        "DNT": "1",
-        "Upgrade-Insecure-Requests": "1",
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36 Edg/135.0.0.0",
-        "sec-ch-ua": '"Microsoft Edge";v="135", "Not-A.Brand";v="8", "Chromium";v="135"',
-        "sec-ch-ua-mobile": "?0",
-        "sec-ch-ua-platform": '"Windows"',
+        "Referer": "https://www.terabox.app/",
     }
 
-    # Headers WITH cookies (authenticated)
-    auth_headers = dict(anon_headers)
-    auth_headers["Cookie"] = cookies
-
-    # Step 1: Follow redirect to get actual URL (try anonymous first)
+    # Step 1: Follow redirect to get surl
     logger.info(f"Step 1: Following redirect for {url}")
-    temp_req = requests.get(url, headers=anon_headers, timeout=30, allow_redirects=True)
-    if not temp_req.ok:
-        logger.error(f"Step 1 failed: HTTP {temp_req.status_code}")
-        return None, None, f"HTTP {temp_req.status_code}"
+    try:
+        temp_req = requests.get(url, headers=base_headers, timeout=30, allow_redirects=True)
+        redirected_url = temp_req.url
+        logger.info(f"Redirected to: {redirected_url}")
+    except Exception as e:
+        return None, None, f"Redirect failed: {e}"
 
-    # Step 2: Get HTML page to extract tokens
-    parsed_url = urlparse(temp_req.url)
+    parsed_url = urlparse(redirected_url)
     query_params = parse_qs(parsed_url.query)
+    surl = query_params.get("surl", [None])[0]
 
-    if "surl" not in query_params:
-        logger.error(f"No surl in redirected URL: {temp_req.url}")
-        return None, None, "Invalid share link"
+    if not surl:
+        # Try extracting surl from path
+        path = parsed_url.path
+        if "/sharing/link" in path or "/s/" in path:
+            surl = path.split("/")[-1]
+        if not surl:
+            return None, None, f"Cannot extract surl from: {redirected_url}"
 
-    logger.info(f"Step 2: Fetching HTML page at {temp_req.url}")
-    req = requests.get(temp_req.url, headers=anon_headers, timeout=30)
-    respo = req.text
+    logger.info(f"Extracted surl: {surl}")
 
-    # Step 3: Extract jsToken and logid from HTML
-    js_token = _find_between(respo, 'fn%28%22', '%22%29')
-    logid = _find_between(respo, 'dp-logid=', '&')
-    logger.info(f"Tokens — jsToken: {'OK' if js_token else 'MISSING'}, logid: {'OK' if logid else 'MISSING'}")
-
-    if not js_token or not logid:
-        logger.error("Failed to extract jsToken/logid from HTML page")
-        return None, None, "Token extraction failed"
-
-    surl = query_params["surl"][0]
-    params = {
-        "app_id": "250528",
-        "web": "1",
-        "channel": "dubox",
-        "clienttype": "0",
-        "jsToken": js_token,
-        "dp-logid": logid,
-        "page": "1",
-        "num": "20",
-        "by": "name",
-        "order": "asc",
-        "site_referer": temp_req.url,
-        "shorturl": surl,
-        "root": "1",
-    }
-
-    # Step 4a: Try share/list WITHOUT cookies (anonymous - avoids datacenter block)
-    logger.info("Step 4a: Calling share/list API without cookies (anonymous)")
+    # Step 2: Get jsToken from HTML (needed for some API endpoints)
+    js_token = ""
+    logid = ""
     try:
-        req2 = requests.get(
-            "https://www.terabox.app/share/list",
-            headers=anon_headers,
-            params=params,
-            timeout=30
-        )
-        response_data2 = req2.json()
-        logger.info(f"Anonymous share/list errno: {response_data2.get('errno')}")
-
-        if response_data2.get("errno") == 0 and response_data2.get("list"):
-            file_info = response_data2["list"][0]
-            dlink = file_info.get("dlink", "")
-            file_name = file_info.get("server_filename", "file")
-            logger.info(f"Anonymous success! File: {file_name}")
-            return dlink, file_name, None
+        page_headers = dict(base_headers)
+        page_headers["Accept"] = "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+        req = requests.get(redirected_url, headers=page_headers, timeout=30)
+        respo = req.text
+        js_token = _find_between(respo, 'fn%28%22', '%22%29')
+        logid = _find_between(respo, 'dp-logid=', '&')
+        logger.info(f"Tokens — jsToken: {'OK' if js_token else 'MISSING'}, logid: {'OK' if logid else 'MISSING'}")
     except Exception as e:
-        logger.error(f"Anonymous API call failed: {e}")
+        logger.warning(f"Token extraction failed: {e}")
 
-    # Step 4b: Fallback — try WITH cookies
-    logger.info("Step 4b: Fallback — calling share/list API with cookies")
-    try:
-        req3 = requests.get(
-            "https://www.terabox.app/share/list",
-            headers=auth_headers,
-            params=params,
-            timeout=30
-        )
-        response_data3 = req3.json()
-        logger.info(f"Auth share/list errno: {response_data3.get('errno')}, errmsg: {response_data3.get('errmsg')}")
+    def try_api_call(use_cookies, use_token, label):
+        params = {
+            "app_id": "250528",
+            "web": "1",
+            "channel": "dubox",
+            "clienttype": "0",
+            "page": "1",
+            "num": "20",
+            "by": "name",
+            "order": "asc",
+            "shorturl": surl,
+            "root": "1",
+        }
+        if use_token and js_token:
+            params["jsToken"] = js_token
+        if use_token and logid:
+            params["dp-logid"] = logid
 
-        if response_data3.get("errno") == 0 and response_data3.get("list"):
-            file_info = response_data3["list"][0]
-            dlink = file_info.get("dlink", "")
-            file_name = file_info.get("server_filename", "file")
-            logger.info(f"Auth success! File: {file_name}")
-            return dlink, file_name, None
+        hdrs = dict(base_headers)
+        if use_cookies:
+            hdrs["Cookie"] = cookies
 
-        error_message = response_data3.get("errmsg", "Unknown error")
-        return None, None, error_message
-    except Exception as e:
-        logger.error(f"Auth API call failed: {e}")
-        return None, None, str(e)
+        logger.info(f"Trying [{label}]: cookies={use_cookies}, token={use_token and bool(js_token)}")
+        try:
+            r = requests.get(
+                "https://www.terabox.app/share/list",
+                headers=hdrs,
+                params=params,
+                timeout=30
+            )
+            raw = r.text[:600]
+            logger.info(f"[{label}] HTTP {r.status_code} | response: {raw}")
+            try:
+                data = r.json()
+            except Exception:
+                return None, f"Non-JSON response: {raw[:200]}"
+
+            errno = data.get("errno")
+            logger.info(f"[{label}] errno={errno}, errmsg={data.get('errmsg')}")
+
+            if errno == 0 and data.get("list"):
+                fi = data["list"][0]
+                return {"dlink": fi.get("dlink",""), "name": fi.get("server_filename","file")}, None
+            return None, data.get("errmsg", f"errno={errno}")
+        except Exception as e:
+            logger.error(f"[{label}] Exception: {e}")
+            return None, str(e)
+
+    # Try 4 combinations in order
+    attempts = [
+        (False, False, "no-cookie no-token"),
+        (False, True,  "no-cookie with-token"),
+        (True,  False, "with-cookie no-token"),
+        (True,  True,  "with-cookie with-token"),
+    ]
+
+    last_error = "All attempts failed"
+    for (use_cookies, use_token, label) in attempts:
+        result, err = try_api_call(use_cookies, use_token, label)
+        if result:
+            logger.info(f"SUCCESS via [{label}]! File: {result['name']}")
+            return result["dlink"], result["name"], None
+        last_error = err
+
+    return None, None, last_error
 
 
 async def is_user_member(client, user_id):
