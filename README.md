@@ -1,127 +1,110 @@
-This is a Telegram Bot written in Python for Downloading Videos From Terabox.
+# Terabox Downloader Bot
+
+A Telegram Bot written in Python that downloads videos from Terabox and sends them directly to Telegram.
+
+> **Architecture:** VPS bot → Replit Proxy API → Terabox CDN (bypasses datacenter IP blocks)
 
 ---
 
-<b>Fill this Values in [config.env](config.env)</b>
-- `BOT_TOKEN`: The Telegram Bot Token that you got from [@BotFather](https://t.me/BotFather). `Str`
-- `TELEGRAM_API`: This is to authenticate your Telegram account for downloading Telegram files. You can get this from <https://my.telegram.org>. `Int`
-- `TELEGRAM_HASH`: This is to authenticate your Telegram account for downloading Telegram files. You can get this from <https://my.telegram.org>. `Str`
-- `FSUB_ID`: The Force Subscribe Channel, users will not be able to use your bot without joining the Channel. (Enter the Channel/Group ID starting with -100). `Int`
-- `DUMP_CHAT_ID`: The Dump Channel, all leeched videos will be Forwared Here. (Enter the Channel/Group ID starting with -100). `Int`
-- `USER_SESSION_STRING`: Pyrogram Session String For 4GB Upload, also add this var for better Uploading Speeds. `Str`
+## Config Variables — `config.env`
+
+| Variable | Description | Type |
+|---|---|---|
+| `BOT_TOKEN` | Telegram Bot Token from [@BotFather](https://t.me/BotFather) | `str` |
+| `TELEGRAM_API` | API ID from <https://my.telegram.org> | `int` |
+| `TELEGRAM_HASH` | API Hash from <https://my.telegram.org> | `str` |
+| `FSUB_ID` | Force Subscribe Channel ID (starts with -100) | `int` |
+| `DUMP_CHAT_ID` | Dump Channel ID — all videos forwarded here (starts with -100) | `int` |
+| `USER_SESSION_STRING` | Pyrogram session string for 4GB uploads & faster speeds | `str` |
+| `COOKIES` | Terabox cookie string (legacy, replaced by `NDUS_COOKIE`) | `str` |
+| `NDUS_COOKIE` | Fresh Terabox `ndus` cookie value — **required for downloads** | `str` |
+| `REPLIT_PROXY_URL` | URL of Replit proxy API endpoint | `str` |
 
 ---
-### For farther assistance visit my support group: [**@JetMirror**](https://t.me/jetmirrorchatz).
+
+## How It Works
+
+```
+User sends Terabox link
+        ↓
+VPS Bot calls Replit Proxy API
+        ↓
+Replit Proxy fetches dlink from dm.terabox.app (clean residential IP)
+        ↓
+VPS Bot downloads file via Replit streaming proxy
+        ↓
+File sent to Telegram
+```
+
+The Replit proxy is needed because Terabox blocks datacenter IPs (VPS). Replit acts as a middleman with a clean IP.
+
 ---
 
-## Deploy using CLI on Heroku
+## VPS Deploy
 
-- Deployment instructions uploaded [**HERE**](https://gist.github.com/Hrishi2861/3f04a05b4d86241a454bd284ed1c3dee)
-- Carefully copy-paste every CMD one by one. If you miss maybe your BOT will not run.
+### 1. Prerequisites
+
+```bash
+sudo apt install python3 python3-pip aria2
+pip3 install -r requirements.txt
+```
+
+### 2. Clone & Configure
+
+```bash
+git clone https://github.com/MikoxYae/Terabox-Downloader-Bot/
+cd Terabox-Downloader-Bot
+cp config.env.example config.env
+nano config.env
+```
+
+Fill in all required variables in `config.env`, including:
+
+```env
+NDUS_COOKIE=your_fresh_ndus_cookie_here
+REPLIT_PROXY_URL=https://your-replit-domain.replit.dev/api/terabox
+```
+
+### 3. Run
+
+```bash
+python3 terabox.py
+```
+
+Or as background process:
+
+```bash
+nohup python3 terabox.py > bot.log 2>&1 &
+```
 
 ---
-## Deploy on VPS
+
+## Getting Fresh Terabox Cookies (NDUS_COOKIE)
+
+Terabox sessions expire periodically. When the bot stops downloading, refresh cookies:
+
+1. Open **Kiwi Browser** on Android (supports DevTools)
+2. Go to `dm.1024terabox.com` and **login**
+3. Open a new tab → type `kiwi://inspect` → tap **inspect** on the Terabox tab
+4. Go to **Application** → **Cookies** → `https://dm.1024terabox.com`
+5. Find `ndus` cookie → copy its **Value**
+6. Update `NDUS_COOKIE` in `config.env` on your VPS
+
 ---
-## Prerequisites
 
-### 1. Installing requirements
+## Updating the Bot
 
-- Clone this repo:
-
-```
-git clone https://github.com/Hrishi2861/Terabox-Downloader-Bot/ && cd Terabox-Downloader-Bot
-```
-
-- For Debian based distros
-
-```
-sudo apt install python3 python3-pip
+```bash
+cd /root/Terabox-Downloader-Bot
+git pull origin master
+pkill -f terabox.py
+sleep 2
+python3 terabox.py &
 ```
 
-Install Docker by following the [Official docker docs](https://docs.docker.com/engine/install/#server).
-Or you can use the convenience script: `curl -fsSL https://get.docker.com |  bash`
+---
 
+## Support
 
-- For Arch and it's derivatives:
+Join support group: [**@JetMirror**](https://t.me/jetmirrorchatz)
 
-```
-sudo pacman -S docker python
-```
-
-------
-
-### 2. Build And Run the Docker Image
-
-Make sure you still mount the app folder and installed the docker from official documentation.
-
-- There are two methods to build and run the docker:
-  1. Using official docker commands.
-  2. Using docker-compose.
-
-------
-
-#### Build And Run The Docker Image Using Official Docker Commands
-
-- Start Docker daemon (SKIP if already running, mostly you don't need to do this):
-
-```
-sudo dockerd
-```
-
-- Build Docker image:
-
-```
-sudo docker build . -t terabox
-```
-
-- Run the image:
-
-```
-sudo docker run -p 80:80 -p 8080:8080 terabox
-```
-
-- To stop the running image:
-
-```
-sudo docker ps
-```
-
-```
-sudo docker stop id
-```
-
-----
-
-#### Build And Run The Docker Image Using docker-compose
-
-**NOTE**: If you want to use ports other than 80 and 8080 change it in [docker-compose.yml](docker-compose.yml).
-
-- Install docker compose
-
-```
-sudo apt install docker-compose
-```
-
-- Build and run Docker image:
-
-```
-sudo docker-compose up --build
-```
-
-- To stop the running image:
-
-```
-sudo docker-compose stop
-```
-
-- To run the image:
-
-```
-sudo docker-compose start
-```
-
-- To get latest log from already running image (after mounting the folder):
-
-```
-sudo docker-compose up
-```
