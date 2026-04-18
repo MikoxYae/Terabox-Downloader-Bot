@@ -82,6 +82,8 @@ if len(USER_SESSION_STRING) == 0:
     USER_SESSION_STRING = None
 
 COOKIES = os.environ.get('COOKIES', '')
+REPLIT_PROXY_URL = os.environ.get('REPLIT_PROXY_URL', 'https://b1c5e368-7c37-41d4-bd8d-041489962f18-00-2n3qh05z30gj0.kirk.replit.dev/api/terabox')
+NDUS_COOKIE = os.environ.get('NDUS_COOKIE', '')
 
 app = Client("jetbot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
@@ -108,121 +110,27 @@ def _find_between(s, start, end):
 
 def get_terabox_direct_link(url, cookies):
     """
-    Get direct download link from Terabox.
-    Terabox share/list API works without cookies from normal IPs.
-    From VPS (datacenter IP), Terabox returns a different/blocked response.
-    We try multiple approaches and log full responses for debugging.
+    Get direct download link via Replit proxy (handles Terabox auth from clean IP).
     """
-    base_headers = {
-        "Accept": "application/json, text/plain, */*",
-        "Accept-Language": "en-US,en;q=0.9",
-        "Connection": "keep-alive",
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36 Edg/135.0.0.0",
-        "Referer": "https://www.terabox.app/",
-    }
-
-    # Step 1: Follow redirect to get surl
-    logger.info(f"Step 1: Following redirect for {url}")
+    proxy_url = REPLIT_PROXY_URL
+    logger.info(f"Calling Replit proxy: {proxy_url}?url={url}")
     try:
-        temp_req = requests.get(url, headers=base_headers, timeout=30, allow_redirects=True)
-        redirected_url = temp_req.url
-        logger.info(f"Redirected to: {redirected_url}")
+        resp = requests.get(proxy_url, params={"url": url}, timeout=60)
+        logger.info(f"Proxy HTTP {resp.status_code}: {resp.text[:300]}")
+        if resp.status_code != 200:
+            return None, None, f"Proxy error {resp.status_code}: {resp.text[:200]}"
+        data = resp.json()
+        if "error" in data:
+            return None, None, data["error"]
+        dlink = data.get("dlink", "")
+        name = data.get("file_name", "video.mp4")
+        if not dlink:
+            return None, None, "Proxy returned no dlink"
+        logger.info(f"Got dlink for: {name}")
+        return dlink, name, None
     except Exception as e:
-        return None, None, f"Redirect failed: {e}"
-
-    parsed_url = urlparse(redirected_url)
-    query_params = parse_qs(parsed_url.query)
-    surl = query_params.get("surl", [None])[0]
-
-    if not surl:
-        # Try extracting surl from path
-        path = parsed_url.path
-        if "/sharing/link" in path or "/s/" in path:
-            surl = path.split("/")[-1]
-        if not surl:
-            return None, None, f"Cannot extract surl from: {redirected_url}"
-
-    logger.info(f"Extracted surl: {surl}")
-
-    # Step 2: Get jsToken from HTML (needed for some API endpoints)
-    js_token = ""
-    logid = ""
-    try:
-        page_headers = dict(base_headers)
-        page_headers["Accept"] = "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
-        req = requests.get(redirected_url, headers=page_headers, timeout=30)
-        respo = req.text
-        js_token = _find_between(respo, 'fn%28%22', '%22%29')
-        logid = _find_between(respo, 'dp-logid=', '&')
-        logger.info(f"Tokens — jsToken: {'OK' if js_token else 'MISSING'}, logid: {'OK' if logid else 'MISSING'}")
-    except Exception as e:
-        logger.warning(f"Token extraction failed: {e}")
-
-    def try_api_call(use_cookies, use_token, label):
-        params = {
-            "app_id": "250528",
-            "web": "1",
-            "channel": "dubox",
-            "clienttype": "0",
-            "page": "1",
-            "num": "20",
-            "by": "name",
-            "order": "asc",
-            "shorturl": surl,
-            "root": "1",
-        }
-        if use_token and js_token:
-            params["jsToken"] = js_token
-        if use_token and logid:
-            params["dp-logid"] = logid
-
-        hdrs = dict(base_headers)
-        if use_cookies:
-            hdrs["Cookie"] = cookies
-
-        logger.info(f"Trying [{label}]: cookies={use_cookies}, token={use_token and bool(js_token)}")
-        try:
-            r = requests.get(
-                "https://www.terabox.app/share/list",
-                headers=hdrs,
-                params=params,
-                timeout=30
-            )
-            raw = r.text[:600]
-            logger.info(f"[{label}] HTTP {r.status_code} | response: {raw}")
-            try:
-                data = r.json()
-            except Exception:
-                return None, f"Non-JSON response: {raw[:200]}"
-
-            errno = data.get("errno")
-            logger.info(f"[{label}] errno={errno}, errmsg={data.get('errmsg')}")
-
-            if errno == 0 and data.get("list"):
-                fi = data["list"][0]
-                return {"dlink": fi.get("dlink",""), "name": fi.get("server_filename","file")}, None
-            return None, data.get("errmsg", f"errno={errno}")
-        except Exception as e:
-            logger.error(f"[{label}] Exception: {e}")
-            return None, str(e)
-
-    # Try 4 combinations in order
-    attempts = [
-        (False, False, "no-cookie no-token"),
-        (False, True,  "no-cookie with-token"),
-        (True,  False, "with-cookie no-token"),
-        (True,  True,  "with-cookie with-token"),
-    ]
-
-    last_error = "All attempts failed"
-    for (use_cookies, use_token, label) in attempts:
-        result, err = try_api_call(use_cookies, use_token, label)
-        if result:
-            logger.info(f"SUCCESS via [{label}]! File: {result['name']}")
-            return result["dlink"], result["name"], None
-        last_error = err
-
-    return None, None, last_error
+        logger.error(f"Proxy call failed: {e}")
+        return None, None, str(e)
 
 
 async def is_user_member(client, user_id):
@@ -319,9 +227,9 @@ async def handle_message(client: Client, message: Message):
         [final_url],
         options={
             "header": [
-                f"Cookie: {COOKIES}",
-                "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36 Edg/135.0.0.0",
-                "Referer: https://www.terabox.app/"
+                f"Cookie: ndus={NDUS_COOKIE}" if NDUS_COOKIE else f"Cookie: {COOKIES}",
+                "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36",
+                "Referer: https://dm.terabox.app/"
             ]
         }
     )
@@ -567,3 +475,4 @@ if __name__ == "__main__":
 
     logger.info("Starting bot client...")
     app.run()
+
