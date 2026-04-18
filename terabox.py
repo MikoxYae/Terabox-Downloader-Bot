@@ -172,7 +172,17 @@ async def handle_message(client: Client, message: Message):
         return
 
     encoded_url = urllib.parse.quote(url)
-    final_url = f"https://terabox-dl.qtcloud.workers.dev/?url={encoded_url}"
+    try:
+        api_resp = requests.get(f"https://terabox-worker.robinkumarshakya103.workers.dev/api?url={encoded_url}", timeout=15)
+        api_data = api_resp.json()
+        if not api_data.get("success") or not api_data.get("files"):
+            await message.reply_text("Could not fetch download link.")
+            return
+        final_url = api_data["files"][0]["download_url"]
+    except Exception as api_err:
+        logging.error(f"API error: {api_err}")
+        await message.reply_text("API error. Please try again.")
+        return
 
     download = aria2.add_uris([final_url])
     status_message = await message.reply_text("sᴇɴᴅɪɴɢ ʏᴏᴜ ᴛʜᴇ ᴍᴇᴅɪᴀ...🤤")
