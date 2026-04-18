@@ -148,14 +148,13 @@ def get_terabox_direct_link(url, cookies):
     req = requests.get(temp_req.url, headers=headers, timeout=30)
     respo = req.text
 
-    # Step 3: Extract jsToken, logid, bdstoken from HTML
+    # Step 3: Extract jsToken and logid from HTML
     js_token = _find_between(respo, 'fn%28%22', '%22%29')
     logid = _find_between(respo, 'dp-logid=', '&')
-    bdstoken = _find_between(respo, 'bdstoken":"', '"')
 
-    logger.info(f"Tokens extracted — jsToken: {'OK' if js_token else 'MISSING'}, logid: {'OK' if logid else 'MISSING'}, bdstoken: {'OK' if bdstoken else 'MISSING'}")
+    logger.info(f"Tokens extracted — jsToken: {'OK' if js_token else 'MISSING'}, logid: {'OK' if logid else 'MISSING'}")
 
-    if not js_token or not logid or not bdstoken:
+    if not js_token or not logid:
         logger.error("Failed to extract required tokens from HTML page")
         return None, None, None
 
