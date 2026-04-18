@@ -110,7 +110,8 @@ def _find_between(s, start, end):
 
 def get_terabox_direct_link(url, cookies):
     """
-    Get direct download link via Replit proxy (handles Terabox auth from clean IP).
+    Get direct download link via Replit proxy.
+    Returns proxy_download_url so CDN download goes through Replit (clean IP).
     """
     proxy_url = REPLIT_PROXY_URL
     logger.info(f"Calling Replit proxy: {proxy_url}?url={url}")
@@ -122,12 +123,13 @@ def get_terabox_direct_link(url, cookies):
         data = resp.json()
         if "error" in data:
             return None, None, data["error"]
-        dlink = data.get("dlink", "")
         name = data.get("file_name", "video.mp4")
-        if not dlink:
-            return None, None, "Proxy returned no dlink"
-        logger.info(f"Got dlink for: {name}")
-        return dlink, name, None
+        # Use proxy_download_url so file downloads through Replit (bypasses CDN IP block on VPS)
+        download_url = data.get("proxy_download_url") or data.get("dlink", "")
+        if not download_url:
+            return None, None, "Proxy returned no download URL"
+        logger.info(f"Got download URL for: {name}")
+        return download_url, name, None
     except Exception as e:
         logger.error(f"Proxy call failed: {e}")
         return None, None, str(e)
@@ -227,9 +229,7 @@ async def handle_message(client: Client, message: Message):
         [final_url],
         options={
             "header": [
-                f"Cookie: ndus={NDUS_COOKIE}" if NDUS_COOKIE else f"Cookie: {COOKIES}",
                 "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36",
-                "Referer: https://dm.terabox.app/"
             ]
         }
     )
@@ -475,4 +475,5 @@ if __name__ == "__main__":
 
     logger.info("Starting bot client...")
     app.run()
+
 
