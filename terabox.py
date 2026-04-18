@@ -1,5 +1,6 @@
 from aria2p import API as Aria2API, Client as Aria2Client
 import asyncio
+import requests
 from dotenv import load_dotenv
 from datetime import datetime
 import os
@@ -11,7 +12,8 @@ from pyrogram.enums import ChatMemberStatus
 from pyrogram.errors import FloodWait
 import time
 import urllib.parse
-from urllib.parse import urlparse
+from urllib.parse import urlparse, parse_qs
+import re
 from flask import Flask, render_template
 from threading import Thread
 
@@ -97,6 +99,110 @@ VALID_DOMAINS = [
 ]
 last_update_time = 0
 
+def _find_between(s, start, end):
+    start_index = s.find(start) + len(start)
+    end_index = s.find(end, start_index)
+    if start_index == -1 or end_index == -1:
+        return ""
+    return s[start_index:end_index]
+
+def get_terabox_direct_link(url, cookies):
+    """
+    Get direct download link from Terabox using jsToken extraction method.
+    Works from VPS by first fetching the HTML page to extract auth tokens.
+    """
+    headers = {
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Encoding": "gzip, deflate, br",
+        "Accept-Language": "en-US,en;q=0.9,hi;q=0.8",
+        "Connection": "keep-alive",
+        "DNT": "1",
+        "Sec-Fetch-Dest": "document",
+        "Sec-Fetch-Mode": "navigate",
+        "Sec-Fetch-Site": "none",
+        "Sec-Fetch-User": "?1",
+        "Upgrade-Insecure-Requests": "1",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36 Edg/135.0.0.0",
+        "sec-ch-ua": '"Microsoft Edge";v="135", "Not-A.Brand";v="8", "Chromium";v="135"',
+        "Cookie": cookies,
+        "sec-ch-ua-mobile": "?0",
+        "sec-ch-ua-platform": '"Windows"',
+    }
+
+    # Step 1: Follow redirect to get actual URL
+    logger.info(f"Step 1: Following redirect for {url}")
+    temp_req = requests.get(url, headers=headers, timeout=30)
+    if not temp_req.ok:
+        logger.error(f"Step 1 failed: HTTP {temp_req.status_code}")
+        return None, None, None
+
+    # Step 2: Get the HTML page to extract tokens
+    parsed_url = urlparse(temp_req.url)
+    query_params = parse_qs(parsed_url.query)
+
+    if "surl" not in query_params:
+        logger.error(f"No surl in redirected URL: {temp_req.url}")
+        return None, None, None
+
+    logger.info(f"Step 2: Fetching HTML page at {temp_req.url}")
+    req = requests.get(temp_req.url, headers=headers, timeout=30)
+    respo = req.text
+
+    # Step 3: Extract jsToken, logid, bdstoken from HTML
+    js_token = _find_between(respo, 'fn%28%22', '%22%29')
+    logid = _find_between(respo, 'dp-logid=', '&')
+    bdstoken = _find_between(respo, 'bdstoken":"', '"')
+
+    logger.info(f"Tokens extracted — jsToken: {'OK' if js_token else 'MISSING'}, logid: {'OK' if logid else 'MISSING'}, bdstoken: {'OK' if bdstoken else 'MISSING'}")
+
+    if not js_token or not logid or not bdstoken:
+        logger.error("Failed to extract required tokens from HTML page")
+        return None, None, None
+
+    surl = query_params["surl"][0]
+    params = {
+        "app_id": "250528",
+        "web": "1",
+        "channel": "dubox",
+        "clienttype": "0",
+        "jsToken": js_token,
+        "dp-logid": logid,
+        "page": "1",
+        "num": "20",
+        "by": "name",
+        "order": "asc",
+        "site_referer": temp_req.url,
+        "shorturl": surl,
+        "root": "1",
+    }
+
+    # Step 4: Call share/list API with tokens
+    logger.info(f"Step 4: Calling share/list API with jsToken")
+    req2 = requests.get(
+        "https://www.terabox.app/share/list",
+        headers=headers,
+        params=params,
+        timeout=30
+    )
+    response_data2 = req2.json()
+    logger.info(f"share/list errno: {response_data2.get('errno')}")
+
+    if (
+        not response_data2 or
+        "list" not in response_data2 or
+        not response_data2["list"] or
+        response_data2.get("errno")
+    ):
+        error_message = response_data2.get("errmsg", "Failed to retrieve file list.")
+        logger.error(f"share/list error: {error_message}")
+        return None, None, error_message
+
+    file_info = response_data2["list"][0]
+    dlink = file_info.get("dlink", "")
+    file_name = file_info.get("server_filename", "file")
+    logger.info(f"Got dlink for: {file_name}")
+    return dlink, file_name, None
+
 async def is_user_member(client, user_id):
     try:
         member = await client.get_chat_member(FSUB_ID, user_id)
@@ -173,48 +279,30 @@ async def handle_message(client: Client, message: Message):
         await message.reply_text("Please provide a valid Terabox link.")
         return
 
-    encoded_url = urllib.parse.quote(url)
+    status_message = await message.reply_text("🔍 Fetching download link...")
+
     try:
-        tb_headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Accept': 'application/json, text/plain, */*',
-            'Accept-Language': 'en-US,en;q=0.9',
-            'Referer': 'https://www.1024terabox.com/',
-            'Cookie': COOKIES
-        }
-        tb_session = requests.Session()
-        tb_session.headers.update(tb_headers)
-        share_resp = tb_session.get(
-            'https://www.1024terabox.com/share/list',
-            params={
-                'app_id': '250528',
-                'shorturl': url,
-                'root': '1',
-                'order': 'name',
-                'desc': '1',
-                'web': '1',
-                'page': '1',
-                'num': '20',
-            },
-            timeout=20,
-            allow_redirects=True
-        )
-        share_data = share_resp.json()
-        logging.info(f"Terabox share API response errno: {share_data.get('errno')}")
-        if share_data.get('errno') != 0 or not share_data.get('list'):
-            await message.reply_text(f"Terabox error: {share_data.get('errmsg', 'Unknown error')}. Check cookies.")
-            return
-        file_info = share_data['list'][0]
-        final_url = file_info.get('dlink') or file_info.get('path')
-        if not final_url:
-            await message.reply_text("No download link found in Terabox response.")
+        final_url, file_name, error = get_terabox_direct_link(url, COOKIES)
+        if error or not final_url:
+            await status_message.edit_text(f"❌ Terabox error: {error or 'Could not get download link'}. Please check COOKIES in config.env.")
             return
     except Exception as tb_err:
-        logging.error(f"Terabox direct API error: {tb_err}")
-        await message.reply_text("Download error. Please try again.")
+        logging.error(f"Terabox error: {tb_err}")
+        await status_message.edit_text("❌ Download error. Please try again.")
         return
-    download = aria2.add_uris([final_url], options={"header": [f"Cookie: {COOKIES}", "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36", "Referer: https://www.1024terabox.com/"]})
-    status_message = await message.reply_text("sᴇɴᴅɪɴɢ ʏᴏᴜ ᴛʜᴇ ᴍᴇᴅɪᴀ...🤤")
+
+    await status_message.edit_text("📥 sᴇɴᴅɪɴɢ ʏᴏᴜ ᴛʜᴇ ᴍᴇᴅɪᴀ...🤤")
+
+    download = aria2.add_uris(
+        [final_url],
+        options={
+            "header": [
+                f"Cookie: {COOKIES}",
+                "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36 Edg/135.0.0.0",
+                "Referer: https://www.terabox.app/"
+            ]
+        }
+    )
 
     start_time = datetime.now()
 
